@@ -1,6 +1,6 @@
 use crate::io::Stdout;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -23,12 +23,11 @@ use tui::{
 };
 mod config;
 use std::path::Path;
-
 struct LogWindow {
     name: String,
     content: Arc<Mutex<Vec<String>>>,
     formatter: Arc<LogFormatter>,
-    scroll_position: usize,
+    scroll_position: Arc<Mutex<usize>>,
     max_history: usize,
 }
 
@@ -61,24 +60,35 @@ fn main() -> io::Result<()> {
     let config = config::read_config("~/.rogger/config.toml").expect("Failed to read config");
     let mut log_windows = Vec::new();
 
+    let is_scrolling = Arc::new(Mutex::new(false));
+
     for log in config.logs {
         let content = Arc::new(Mutex::new(Vec::new()));
         let formatter = Arc::new(create_log_formatter());
         let max_history = 10000; // 或者从配置文件中读取
+        let scroll_position = Arc::new(Mutex::new(0));
 
         let log_window = LogWindow {
             name: log.name.clone(),
             content: Arc::clone(&content),
             formatter: Arc::clone(&formatter),
-            scroll_position: 0,
+            scroll_position: Arc::clone(&scroll_position),
             max_history,
         };
 
         log_windows.push(log_window);
 
         let content_clone = Arc::clone(&content);
+        let scroll_position_clone = Arc::clone(&scroll_position);
+        let is_scrolling_clone = Arc::clone(&is_scrolling);
         thread::spawn(move || {
-            if let Err(e) = connect_and_tail(&log, content_clone, max_history) {
+            if let Err(e) = connect_and_tail(
+                &log,
+                content_clone,
+                max_history,
+                scroll_position_clone,
+                is_scrolling_clone,
+            ) {
                 eprintln!("Error in connection to {}: {}", log.host, e);
             }
         });
@@ -167,7 +177,13 @@ fn create_log_formatter() -> LogFormatter {
     formatter
 }
 
-fn connect_and_tail(log: &config::LogConfig, content: Arc<Mutex<Vec<String>>>, max_history: usize) -> io::Result<()> {
+fn connect_and_tail(
+    log: &config::LogConfig,
+    content: Arc<Mutex<Vec<String>>>,
+    max_history: usize,
+    scroll_position: Arc<Mutex<usize>>,
+    is_scrolling: Arc<Mutex<bool>>,
+) -> io::Result<()> {
     let tcp = TcpStream::connect(format!("{}:{}", log.host, log.port))?;
     let mut sess = Session::new().unwrap();
 
@@ -202,6 +218,12 @@ fn connect_and_tail(log: &config::LogConfig, content: Arc<Mutex<Vec<String>>>, m
                 if content.len() > max_history {
                     content.remove(0);
                 }
+
+                // 更新scroll_position
+                let mut scroll_pos = scroll_position.lock().unwrap();
+                if !*is_scrolling.lock().unwrap() {
+                    *scroll_pos = content.len().saturating_sub(1);
+                }
             }
             Err(e) => {
                 eprintln!("读取错误 ({}): {}", log.host, e);
@@ -233,24 +255,45 @@ fn run_ui(app_state: &mut AppState) -> io::Result<()> {
             if let Event::Key(key) = event::read()? {
                 match key.code {
                     KeyCode::Char('q') => break,
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
                     KeyCode::Enter => {
                         app_state.is_maximized = !app_state.is_maximized;
-                    }
-                    KeyCode::Char('s') => {
                         app_state.is_scrolling = !app_state.is_scrolling;
+                        let window = &mut app_state.log_windows[app_state.selected_window];
+                        let content_len = window.content.lock().unwrap().len();
+                        let mut scroll_position = window.scroll_position.lock().unwrap();
+                        *scroll_position = content_len.saturating_sub(1);
                     }
-                    KeyCode::Char('j') | KeyCode::Down => {
+                    // KeyCode::Char('s') => {
+                    //     // 保存到本地文件逻辑
+                    //     todo!()
+                    // }
+                    KeyCode::Down => {
                         if app_state.is_scrolling {
                             scroll_log(app_state, ScrollDirection::Down);
                         } else {
                             move_selection(app_state, MoveDirection::Down);
                         }
                     }
-                    KeyCode::Char('k') | KeyCode::Up => {
+                    KeyCode::Up => {
                         if app_state.is_scrolling {
                             scroll_log(app_state, ScrollDirection::Up);
                         } else {
                             move_selection(app_state, MoveDirection::Up);
+                        }
+                    }
+                    KeyCode::Left => {
+                        if app_state.is_scrolling {
+
+                        } else {
+                            move_selection(app_state, MoveDirection::Left);
+                        }
+                    }
+                    KeyCode::Right => {
+                        if app_state.is_scrolling {
+                            
+                        } else {
+                            move_selection(app_state, MoveDirection::Right);
                         }
                     }
                     KeyCode::PageDown => {
@@ -273,7 +316,7 @@ fn run_ui(app_state: &mut AppState) -> io::Result<()> {
                             scroll_log(app_state, ScrollDirection::Bottom);
                         }
                     }
-                    KeyCode::Char('c') => {
+                    KeyCode::Char('r') => {
                         clear_history(app_state);
                     }
                     _ => {}
@@ -297,35 +340,40 @@ fn clear_history(app_state: &mut AppState) {
     let window = &mut app_state.log_windows[app_state.selected_window];
     let mut content = window.content.lock().unwrap();
     content.clear();
-    window.scroll_position = 0;
+    window.scroll_position = Arc::new(Mutex::new(0));
 }
 
 fn scroll_log(app_state: &mut AppState, direction: ScrollDirection) {
+    if !app_state.is_scrolling {
+        return;
+    }
+
     let window = &mut app_state.log_windows[app_state.selected_window];
     let content_len = window.content.lock().unwrap().len();
-    
+    let mut scroll_position = window.scroll_position.lock().unwrap();
+
     match direction {
         ScrollDirection::Up => {
-            if window.scroll_position > 0 {
-                window.scroll_position -= 1;
+            if *scroll_position > 0 {
+                *scroll_position -= 1;
             }
         }
         ScrollDirection::Down => {
-            if window.scroll_position < content_len.saturating_sub(1) {
-                window.scroll_position += 1;
+            if *scroll_position < content_len.saturating_sub(1) {
+                *scroll_position += 1;
             }
         }
         ScrollDirection::PageUp => {
-            window.scroll_position = window.scroll_position.saturating_sub(10);
+            *scroll_position = scroll_position.saturating_sub(10);
         }
         ScrollDirection::PageDown => {
-            window.scroll_position = (window.scroll_position + 10).min(content_len.saturating_sub(1));
+            *scroll_position = (*scroll_position + 10).min(content_len.saturating_sub(1));
         }
         ScrollDirection::Top => {
-            window.scroll_position = 0;
+            *scroll_position = 0;
         }
         ScrollDirection::Bottom => {
-            window.scroll_position = content_len.saturating_sub(1);
+            *scroll_position = content_len.saturating_sub(1);
         }
     }
 }
@@ -333,15 +381,29 @@ fn scroll_log(app_state: &mut AppState, direction: ScrollDirection) {
 fn render_maximized_window(f: &mut Frame<CrosstermBackend<Stdout>>, app_state: &AppState) {
     let selected_window = &app_state.log_windows[app_state.selected_window];
     let content = selected_window.content.lock().unwrap();
+    let scroll_position = *selected_window.scroll_position.lock().unwrap();
 
     let block = Block::default()
-        .title(format!("{} (Scroll: {})", selected_window.name, selected_window.scroll_position))
+        .title(format!(
+            "{} (Scroll: {})",
+            selected_window.name, scroll_position
+        ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Yellow));
 
+    let height = f.size().height as usize - 2; // 减去边框的高度
+    let content_len = content.len();
+    
+    let start = if app_state.is_scrolling {
+        content_len.saturating_sub(height).min(scroll_position)
+    } else {
+        content_len.saturating_sub(height)
+    };
+
     let text: Vec<Spans> = content
         .iter()
-        .skip(selected_window.scroll_position)
+        .skip(start)
+        .take(height)
         .map(|line| selected_window.formatter.format_line(line))
         .collect();
 
@@ -357,8 +419,13 @@ fn render_normal_layout(f: &mut Frame<CrosstermBackend<Stdout>>, app_state: &App
 
     for (i, log_window) in app_state.log_windows.iter().enumerate() {
         let content = log_window.content.lock().unwrap();
+        let scroll_position = *log_window.scroll_position.lock().unwrap();
+
         let block = Block::default()
-            .title(format!("{} (Scroll: {})", log_window.name, log_window.scroll_position))
+            .title(format!(
+                "{} (Scroll: {})",
+                log_window.name, scroll_position
+            ))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(if i == app_state.selected_window {
                 Color::Yellow
@@ -366,15 +433,26 @@ fn render_normal_layout(f: &mut Frame<CrosstermBackend<Stdout>>, app_state: &App
                 Color::White
             }));
 
+        let height = chunks[i].height as usize - 2; // 减去边框的高度
+        let content_len = content.len();
+        
+        let start = if app_state.is_scrolling {
+            content_len.saturating_sub(height).min(scroll_position)
+        } else {
+            content_len.saturating_sub(height)
+        };
+
         let text: Vec<Spans> = content
             .iter()
-            .skip(log_window.scroll_position)
+            .skip(start)
+            .take(height)
             .map(|line| log_window.formatter.format_line(line))
             .collect();
 
         let paragraph = Paragraph::new(text)
             .block(block)
             .style(Style::default().fg(Color::White).bg(Color::Black));
+
         f.render_widget(paragraph, chunks[i]);
     }
 }
