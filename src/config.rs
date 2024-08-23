@@ -44,7 +44,7 @@ mod tests {
 
     #[test]
     fn test_read_config() {
-        let config = read_config("~/.rogger/config.toml").expect("Failed to read config");
+        let config = read_config("~/.rogger/config.toml").expect("Failed to read config: ~/.rogger/config.toml");
         for log in &config.logs {
             println!("{:?}", log);
         }
