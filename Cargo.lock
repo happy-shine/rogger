@@ -291,6 +291,8 @@ dependencies = [
  "ssh2",
  "toml",
  "tui",
+ "unicode-segmentation",
+ "unicode-width",
 ]
 
 [[package]]

@@ -14,10 +14,11 @@ pub struct LogConfig {
     pub name: String,
     pub host: String,
     pub port: u16,
+    pub log_path: String,
     pub username: Option<String>,
     pub password: Option<String>,
     pub ssh_key: Option<String>,
-    pub log_path: String,
+    pub max_history: Option<usize>,
 }
 
 
@@ -35,18 +36,5 @@ fn expand_tilde(path: &str) -> io::Result<PathBuf> {
         Ok(PathBuf::from(home).join(&path[2..]))
     } else {
         Ok(PathBuf::from(path))
-    }
-}
-
-
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_read_config() {
-        let config = read_config("~/.rogger/config.toml").expect("Failed to read config: ~/.rogger/config.toml");
-        for log in &config.logs {
-            println!("{:?}", log);
-        }
     }
 }
