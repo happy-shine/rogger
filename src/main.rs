@@ -240,7 +240,7 @@ fn connect_and_tail(
             Ok(0) => break,
             Ok(_) => {
                 let mut content = content.lock().unwrap();
-                content.push(line.trim().to_string());
+                content.push(line.to_string());
                 
                 while content.len() > max_history {
                     content.remove(0);
@@ -589,67 +589,32 @@ fn render_normal_layout(f: &mut Frame<CrosstermBackend<Stdout>>, app_state: &App
 }
 
 fn create_layout(area: Rect, window_count: usize) -> Vec<Rect> {
-    let mut constraints = vec![];
-    let rows = (window_count as f32).sqrt().ceil() as usize;
-    let cols = (window_count as f32 / rows as f32).ceil() as usize;
+    let constraints: Vec<Constraint> = (0..window_count)
+        .map(|_| Constraint::Percentage((100 / window_count) as u16))
+        .collect();
 
-    for _ in 0..rows {
-        constraints.push(Constraint::Percentage((100 / rows) as u16));
-    }
-
-    let row_layouts = Layout::default()
-        .direction(LayoutDirection::Vertical) 
+    Layout::default()
+        .direction(LayoutDirection::Vertical)
         .constraints(constraints)
-        .split(area);
-
-    let mut all_chunks = vec![];
-    for row in row_layouts.iter().take(rows) {
-        let mut col_constraints = vec![];
-        for _ in 0..cols {
-            col_constraints.push(Constraint::Percentage((100 / cols) as u16));
-        }
-        let row_chunks = Layout::default()
-            .direction(LayoutDirection::Horizontal) 
-            .constraints(col_constraints)
-            .split(*row);
-        all_chunks.extend(row_chunks);
-    }
-
-    all_chunks.truncate(window_count);
-    all_chunks
+        .split(area)
 }
 
 fn move_selection(app_state: &mut AppState, direction: MoveDirection) {
     let window_count = app_state.log_windows.len();
-    let rows = (window_count as f32).sqrt().ceil() as usize;
-    let cols = (window_count as f32 / rows as f32).ceil() as usize;
 
-    let current_row = app_state.selected_window / cols;
-    let current_col = app_state.selected_window % cols;
-
-    let (new_row, new_col) = match direction {
-        MoveDirection::Left => (
-            current_row,
-            if current_col > 0 {
-                current_col - 1
-            } else {
-                cols - 1
-            },
-        ),
-        MoveDirection::Right => (current_row, (current_col + 1) % cols),
-        MoveDirection::Up => (
-            if current_row > 0 {
-                current_row - 1
-            } else {
-                rows - 1
-            },
-            current_col,
-        ),
-        MoveDirection::Down => ((current_row + 1) % rows, current_col),
-    };
-
-    let new_index = new_row * cols + new_col;
-    if new_index < window_count {
-        app_state.selected_window = new_index;
+    match direction {
+        MoveDirection::Up => {
+            if app_state.selected_window > 0 {
+                app_state.selected_window -= 1;
+            }
+        }
+        MoveDirection::Down => {
+            if app_state.selected_window < window_count - 1 {
+                app_state.selected_window += 1;
+            }
+        }
+        MoveDirection::Left | MoveDirection::Right => {
+            // 在单列布局中,左右移动不做任何操作
+        }
     }
 }
