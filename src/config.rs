@@ -1,15 +1,25 @@
-use std::fs;
 use serde::Deserialize;
-use toml;
-use std::path::PathBuf;
+use std::fs;
 use std::io;
+use std::path::PathBuf;
+use toml;
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct Config {
     pub logs: Vec<LogConfig>,
+    // pub regexps: Vec<RegexConfig>,
+    // pub global: GlobalConfig,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
+pub struct GlobalConfig {
+    pub auto_wrapping: Option<bool>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct RegexConfig {}
+
+#[derive(Deserialize, Debug, Clone)]
 pub struct LogConfig {
     pub name: String,
     pub host: String,
@@ -21,7 +31,6 @@ pub struct LogConfig {
     pub max_history: Option<usize>,
 }
 
-
 pub fn read_config(path: &str) -> Result<Config, Box<dyn std::error::Error>> {
     let config_path = expand_tilde(path)?;
     let content = fs::read_to_string(config_path)?;
@@ -29,10 +38,11 @@ pub fn read_config(path: &str) -> Result<Config, Box<dyn std::error::Error>> {
     Ok(config)
 }
 
-
 fn expand_tilde(path: &str) -> io::Result<PathBuf> {
     if path.starts_with("~/") {
-        let home = std::env::var("HOME").map_err(|_| io::Error::new(io::ErrorKind::NotFound, "HOME environment variable not set"))?;
+        let home = std::env::var("HOME").map_err(|_| {
+            io::Error::new(io::ErrorKind::NotFound, "HOME environment variable not set")
+        })?;
         Ok(PathBuf::from(home).join(&path[2..]))
     } else {
         Ok(PathBuf::from(path))
